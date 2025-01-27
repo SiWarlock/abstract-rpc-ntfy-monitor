@@ -5,6 +5,7 @@ const LEAKED_RPC_URL = 'https://abstract.leakedrpc.com';
 const OFFICIAL_RPC_URL = 'https://api.abs.xyz';
 const MAINNET_RPC_URL = 'https://api.mainnet.abs.xyz';
 const ROOT_RPC_URL = 'https://abs.xyz';
+const BLAST_RPC_URL = 'https://abstract-mainnet.public.blastapi.io';
 const NTFY_URL = 'https://ntfy.sh/abs';
 const CHECK_INTERVAL = 1000; // Check every second
 
@@ -14,14 +15,15 @@ interface RPCStatus {
     timestamp?: number;
 }
 
-type RPCUrls = typeof LEAKED_RPC_URL | typeof OFFICIAL_RPC_URL | typeof MAINNET_RPC_URL | typeof ROOT_RPC_URL;
+type RPCUrls = typeof LEAKED_RPC_URL | typeof OFFICIAL_RPC_URL | typeof MAINNET_RPC_URL | typeof ROOT_RPC_URL | typeof BLAST_RPC_URL;
 
 // Track if we've shown the network detection message for each RPC
 const networkDetectionShown: Record<RPCUrls, boolean> = {
     [LEAKED_RPC_URL]: false,
     [OFFICIAL_RPC_URL]: false,
     [MAINNET_RPC_URL]: false,
-    [ROOT_RPC_URL]: false
+    [ROOT_RPC_URL]: false,
+    [BLAST_RPC_URL]: false
 };
 
 function getErrorMessage(error: any, url: RPCUrls): string {
@@ -102,10 +104,12 @@ async function monitorRPC() {
     let officialWasDown = true;
     let mainnetWasDown = true;
     let rootWasDown = true;
+    let blastWasDown = true;
     let lastLeakedBlock = 0;
     let lastOfficialBlock = 0;
     let lastMainnetBlock = 0;
     let lastRootBlock = 0;
+    let lastBlastBlock = 0;
     
     console.log('🚀 Starting Abstract RPC monitoring...');
     await sendNotification('🚀 Starting Abstract RPC monitoring...');
@@ -114,15 +118,17 @@ async function monitorRPC() {
     console.log(`- Official: ${OFFICIAL_RPC_URL}`);
     console.log(`- Mainnet: ${MAINNET_RPC_URL}`);
     console.log(`- Root: ${ROOT_RPC_URL}`);
+    console.log(`- Blast: ${BLAST_RPC_URL}`);
     console.log(`- Leaked: ${LEAKED_RPC_URL}\n`);
 
     while (true) {
         // Check all RPCs
-        const [leakedStatus, officialStatus, mainnetStatus, rootStatus] = await Promise.all([
+        const [leakedStatus, officialStatus, mainnetStatus, rootStatus, blastStatus] = await Promise.all([
             checkRPCStatus(LEAKED_RPC_URL, 'Leaked RPC'),
             checkRPCStatus(OFFICIAL_RPC_URL, 'Official RPC'),
             checkRPCStatus(MAINNET_RPC_URL, 'Mainnet RPC'),
-            checkRPCStatus(ROOT_RPC_URL, 'Root RPC')
+            checkRPCStatus(ROOT_RPC_URL, 'Root RPC'),
+            checkRPCStatus(BLAST_RPC_URL, 'Blast RPC')
         ]);
         
         // Handle leaked RPC status changes
@@ -163,6 +169,16 @@ async function monitorRPC() {
             rootWasDown = false;
         } else if (!rootStatus.isUp && !rootWasDown) {
             rootWasDown = true;
+        }
+
+        // Handle blast RPC status changes
+        if (blastStatus.isUp && blastWasDown) {
+            const msg = `⚡ Blast RPC is back online! Block: ${blastStatus.blockNumber}`;
+            console.log(`\n${msg}`);
+            await sendNotification(msg);
+            blastWasDown = false;
+        } else if (!blastStatus.isUp && !blastWasDown) {
+            blastWasDown = true;
         }
 
         await new Promise(resolve => setTimeout(resolve, CHECK_INTERVAL));
