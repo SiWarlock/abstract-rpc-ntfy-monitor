@@ -2,7 +2,8 @@ import { ethers } from 'ethers';
 import axios from 'axios';
 
 const LEAKED_RPC_URL = 'https://abstract.leakedrpc.com';
-const OFFICIAL_RPC_URL = 'https://api.abs.xyz'; // Added /rpc path
+const OFFICIAL_RPC_URL = 'https://api.abs.xyz';
+const MAINNET_RPC_URL = 'https://api.mainnet.abs.xyz';
 const NTFY_URL = 'https://ntfy.sh/abs';
 const CHECK_INTERVAL = 1000; // Check every second
 
@@ -12,31 +13,52 @@ interface RPCStatus {
     timestamp?: number;
 }
 
-function getErrorMessage(error: any): string {
+type RPCUrls = typeof LEAKED_RPC_URL | typeof OFFICIAL_RPC_URL | typeof MAINNET_RPC_URL;
+
+// Track if we've shown the network detection message for each RPC
+const networkDetectionShown: Record<RPCUrls, boolean> = {
+    [LEAKED_RPC_URL]: false,
+    [OFFICIAL_RPC_URL]: false,
+    [MAINNET_RPC_URL]: false
+};
+
+function getErrorMessage(error: any, url: RPCUrls): string {
     if (error.code === 'ENOTFOUND') return 'DNS lookup failed';
     if (error.code === 'SERVER_ERROR') {
         if (error.shortMessage?.includes('502')) return '502 Bad Gateway';
         if (error.shortMessage?.includes('301')) return 'URL has moved - needs updated RPC path';
         return error.shortMessage || 'Server error';
     }
-    if (error.message?.includes('failed to detect network')) return 'Network detection failed';
+    if (error.message?.includes('failed to detect network')) {
+        // Only show network detection message once per RPC
+        if (!networkDetectionShown[url]) {
+            networkDetectionShown[url] = true;
+            return 'Network detection failed - will keep retrying';
+        }
+        return '';
+    }
     return 'Connection failed';
 }
 
-async function checkRPCStatus(url: string, name: string): Promise<RPCStatus> {
+async function checkRPCStatus(url: RPCUrls, name: string): Promise<RPCStatus> {
     try {
-        const provider = new ethers.JsonRpcProvider(url);
+        const provider = new ethers.JsonRpcProvider(url, undefined, {
+            staticNetwork: true, // Prevent automatic network detection and retries
+            polling: true, // Enable polling mode
+            pollingInterval: 1000, // Match our check interval
+            batchMaxCount: 1 // Minimize concurrent requests
+        });
         
-        // 1. Check block number
+        // Reset the network detection message flag on successful connection
+        networkDetectionShown[url] = false;
+        
         const blockNumber = await provider.getBlockNumber();
         
-        // 2. Get latest block details
         const latestBlock = await provider.getBlock(blockNumber);
         if (!latestBlock) {
             return { isUp: false };
         }
         
-        // 3. Check if block timestamp is recent (within last 5 minutes)
         const blockTimestamp = Number(latestBlock.timestamp) * 1000;
         const now = Date.now();
         const fiveMinutes = 5 * 60 * 1000;
@@ -46,7 +68,6 @@ async function checkRPCStatus(url: string, name: string): Promise<RPCStatus> {
             return { isUp: false };
         }
 
-        // Only log block number when there's a change
         console.log(`${name}: Block #${blockNumber}`);
         return { 
             isUp: true,
@@ -54,9 +75,10 @@ async function checkRPCStatus(url: string, name: string): Promise<RPCStatus> {
             timestamp: blockTimestamp
         };
     } catch (error) {
-        const errorMsg = getErrorMessage(error);
-        // Log errors without the full stack trace
-        console.log(`${name}: ${errorMsg}`);
+        const errorMsg = getErrorMessage(error, url);
+        if (errorMsg) {
+            console.log(`${name}: ${errorMsg}`);
+        }
         return { isUp: false };
     }
 }
@@ -76,21 +98,25 @@ async function sendNotification(message: string) {
 async function monitorRPC() {
     let leakedWasDown = true;
     let officialWasDown = true;
+    let mainnetWasDown = true;
     let lastLeakedBlock = 0;
     let lastOfficialBlock = 0;
+    let lastMainnetBlock = 0;
     
     console.log('🚀 Starting Abstract RPC monitoring...');
     await sendNotification('🚀 Starting Abstract RPC monitoring...');
     
-    console.log(`Monitoring RPCs:`);
+    console.log(`\nMonitoring RPCs:`);
     console.log(`- Official: ${OFFICIAL_RPC_URL}`);
+    console.log(`- Mainnet: ${MAINNET_RPC_URL}`);
     console.log(`- Leaked: ${LEAKED_RPC_URL}\n`);
 
     while (true) {
-        // Check both RPCs
-        const [leakedStatus, officialStatus] = await Promise.all([
+        // Check all RPCs
+        const [leakedStatus, officialStatus, mainnetStatus] = await Promise.all([
             checkRPCStatus(LEAKED_RPC_URL, 'Leaked RPC'),
-            checkRPCStatus(OFFICIAL_RPC_URL, 'Official RPC')
+            checkRPCStatus(OFFICIAL_RPC_URL, 'Official RPC'),
+            checkRPCStatus(MAINNET_RPC_URL, 'Mainnet RPC')
         ]);
         
         // Handle leaked RPC status changes
@@ -100,7 +126,6 @@ async function monitorRPC() {
             await sendNotification(msg);
             leakedWasDown = false;
         } else if (!leakedStatus.isUp && !leakedWasDown) {
-            console.log('\nLeaked RPC is down');
             leakedWasDown = true;
         }
 
@@ -111,8 +136,17 @@ async function monitorRPC() {
             await sendNotification(msg);
             officialWasDown = false;
         } else if (!officialStatus.isUp && !officialWasDown) {
-            console.log('\nOfficial RPC is down');
             officialWasDown = true;
+        }
+
+        // Handle mainnet RPC status changes
+        if (mainnetStatus.isUp && mainnetWasDown) {
+            const msg = `⭐ Mainnet RPC is back online! Block: ${mainnetStatus.blockNumber}`;
+            console.log(`\n${msg}`);
+            await sendNotification(msg);
+            mainnetWasDown = false;
+        } else if (!mainnetStatus.isUp && !mainnetWasDown) {
+            mainnetWasDown = true;
         }
 
         await new Promise(resolve => setTimeout(resolve, CHECK_INTERVAL));
