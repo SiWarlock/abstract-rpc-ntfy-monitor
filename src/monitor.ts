@@ -1,41 +1,51 @@
 import { ethers } from 'ethers';
 import axios from 'axios';
 
-const RPC_URL = 'https://abstract.leakedrpc.com';
+const LEAKED_RPC_URL = 'https://abstract.leakedrpc.com';
+const OFFICIAL_RPC_URL = 'https://api.mainnet.abs.xyz';
 const NTFY_URL = 'https://ntfy.sh/abs';
 const CHECK_INTERVAL = 1000; // Check every second
 
-async function checkRPCStatus(): Promise<boolean> {
+interface RPCStatus {
+    isUp: boolean;
+    blockNumber?: number;
+    timestamp?: number;
+}
+
+async function checkRPCStatus(url: string, name: string): Promise<RPCStatus> {
     try {
-        const provider = new ethers.JsonRpcProvider(RPC_URL);
+        const provider = new ethers.JsonRpcProvider(url);
         
         // 1. Check block number
         const blockNumber = await provider.getBlockNumber();
-        console.log('Block number:', blockNumber);
+        console.log(`${name} Block number:`, blockNumber);
         
         // 2. Get latest block details
         const latestBlock = await provider.getBlock(blockNumber);
         if (!latestBlock) {
-            console.log('Failed to get latest block details');
-            return false;
+            console.log(`${name}: Failed to get latest block details`);
+            return { isUp: false };
         }
         
-
-        // 5. Check if block timestamp is recent (within last 5 minutes)
+        // 3. Check if block timestamp is recent (within last 5 minutes)
         const blockTimestamp = Number(latestBlock.timestamp) * 1000; // Convert to milliseconds
         const now = Date.now();
         const fiveMinutes = 5 * 60 * 1000;
         
         if (now - blockTimestamp > fiveMinutes) {
-            console.log('Chain appears stale - last block too old');
-            return false;
+            console.log(`${name}: Chain appears stale - last block too old`);
+            return { isUp: false };
         }
 
-        console.log('All RPC checks passed successfully');
-        return true;
+        console.log(`${name}: All RPC checks passed successfully`);
+        return { 
+            isUp: true,
+            blockNumber,
+            timestamp: blockTimestamp
+        };
     } catch (error) {
-        console.error('RPC check failed:', error);
-        return false;
+        console.error(`${name} RPC check failed:`, error);
+        return { isUp: false };
     }
 }
 
@@ -53,20 +63,39 @@ async function sendNotification(message: string) {
 }
 
 async function monitorRPC() {
-    let wasDown = true; // Initialize as true to send notification on first recovery
-    await sendNotification('Starting RPC monitoring...');
+    let leakedWasDown = true;
+    let officialWasDown = true;
+    
+    await sendNotification('🚀 Starting Abstract RPC monitoring...');
     console.log('Starting RPC monitoring...');
 
     while (true) {
-        const isUp = await checkRPCStatus();
+        // Check both RPCs
+        const [leakedStatus, officialStatus] = await Promise.all([
+            checkRPCStatus(LEAKED_RPC_URL, 'Leaked RPC'),
+            checkRPCStatus(OFFICIAL_RPC_URL, 'Official RPC')
+        ]);
         
-        if (isUp && wasDown) {
-            console.log('RPC is back online!');
-            await sendNotification('🎉 RPC is back online!');
-            wasDown = false;
-        } else if (!isUp) {
-            console.log('RPC is down');
-            wasDown = true;
+        // Handle leaked RPC status changes
+        if (leakedStatus.isUp && leakedWasDown) {
+            const msg = `🎉 Leaked RPC is back online! Block: ${leakedStatus.blockNumber}`;
+            console.log(msg);
+            await sendNotification(msg);
+            leakedWasDown = false;
+        } else if (!leakedStatus.isUp && !leakedWasDown) {
+            console.log('Leaked RPC is down');
+            leakedWasDown = true;
+        }
+
+        // Handle official RPC status changes
+        if (officialStatus.isUp && officialWasDown) {
+            const msg = `🌟 Official RPC is back online! Block: ${officialStatus.blockNumber}`;
+            console.log(msg);
+            await sendNotification(msg);
+            officialWasDown = false;
+        } else if (!officialStatus.isUp && !officialWasDown) {
+            console.log('Official RPC is down');
+            officialWasDown = true;
         }
 
         await new Promise(resolve => setTimeout(resolve, CHECK_INTERVAL));
